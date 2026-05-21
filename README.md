@@ -1,2 +1,2 @@
 # Elecciones100x100Algeciras
-Elecciones Andaluzas 2027
+Elecciones Andaluzas 2026
