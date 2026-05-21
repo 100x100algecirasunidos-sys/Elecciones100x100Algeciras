@@ -36,6 +36,13 @@
     .legend .item{display:flex;align-items:center;gap:8px;font-size:12px;margin:4px 0;color:rgba(231,238,252,.82)}
     .legend .sw{width:14px;height:14px;border-radius:4px;border:1px solid rgba(255,255,255,.18)}
     .note{margin-top:10px;font-size:12px;color:rgba(231,238,252,.68)}
+    .tabs{display:flex;gap:8px;margin:12px 0 10px}
+    .tab-btn{flex:1}
+    .tab-btn.active{background:rgba(243,105,40,.18);border-color:rgba(243,105,40,.45)}
+    .tab-pane{display:none}
+    .tab-pane.active{display:block}
+    .table-wrap{overflow:auto;border-radius:14px}
+    .totals-table{min-width:900px}
   </style>
 </head>
 <body>
@@ -52,6 +59,10 @@
     </div>
 
     <div class="controls">
+      <div class="seg">
+        <label><input type="radio" name="geoMode" value="section" checked> Nivel sección</label>
+        <label><input type="radio" name="geoMode" value="barriada"> Nivel barriada</label>
+      </div>
       <div class="row">
         <span class="pill" id="partyInfo">Partido: 100x100</span>
         <select id="party"></select>
@@ -74,23 +85,54 @@
       </div>
     </div>
 
-    <div class="muted" style="margin: 10px 0 6px">Resumen por distrito (filtrado)</div>
-    <table id="districtTable">
-      <thead><tr><th>Dist</th><th>Secc</th><th>Votos</th><th>%</th><th>Media</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="mapPane">Mapa</button>
+      <button class="tab-btn" data-tab="totalsPane">Totales</button>
+    </div>
 
-    <div class="muted" style="margin: 12px 0 6px">Top 15 (filtrado) por votos</div>
-    <table id="topVotes">
-      <thead><tr><th>#</th><th>Dist</th><th>Sec</th><th>Votos</th><th>%</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div id="mapPane" class="tab-pane active">
+      <div class="muted" style="margin: 10px 0 6px">Resumen por distrito (filtrado)</div>
+      <table id="districtTable">
+        <thead><tr><th>Dist</th><th>Secc</th><th>Votos</th><th>%</th><th>Media</th></tr></thead>
+        <tbody></tbody>
+      </table>
 
-    <div class="muted" style="margin: 12px 0 6px">Top 15 (filtrado) por %</div>
-    <table id="topPct">
-      <thead><tr><th>#</th><th>Dist</th><th>Sec</th><th>%</th><th>Votos</th></tr></thead>
-      <tbody></tbody>
-    </table>
+      <div class="muted" style="margin: 12px 0 6px">Resumen por barriada (filtrado)</div>
+      <table id="barriadaTable">
+        <thead><tr><th>Barriada</th><th>Secc</th><th>Votos</th><th>%</th><th>Ganador</th></tr></thead>
+        <tbody></tbody>
+      </table>
+
+      <div class="muted" style="margin: 12px 0 6px">Top 15 (filtrado) por votos</div>
+      <table id="topVotes">
+        <thead><tr><th>#</th><th>Dist</th><th>Sec</th><th>Votos</th><th>%</th></tr></thead>
+        <tbody></tbody>
+      </table>
+
+      <div class="muted" style="margin: 12px 0 6px">Top 15 (filtrado) por %</div>
+      <table id="topPct">
+        <thead><tr><th>#</th><th>Dist</th><th>Sec</th><th>%</th><th>Votos</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="totalsPane" class="tab-pane">
+      <div class="muted" style="margin: 10px 0 6px">Totales por distrito y sección</div>
+      <div class="table-wrap">
+        <table id="totalsSectionTable" class="totals-table">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="muted" style="margin: 12px 0 6px">Totales por barriada</div>
+      <div class="table-wrap">
+        <table id="totalsBarriadaTable" class="totals-table">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
 
     <div class="note">Los datos se cargan desde la fuente provincial y se filtran únicamente a Algeciras.</div>
   </aside>
@@ -98,10 +140,15 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
 <script>
   const DATA_URL = 'https://estaticos-data.prensaiberica.es/statics/data/content/json/geographic/borders/2026-05-17/sscc/provinces/11.json';
+  const BARRIADAS_URL = 'https://algeciras.enmapa.com/geoserver/algecirasgis/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=algecirasgis:barriadas&outputFormat=json&srsName=EPSG:4326';
   const DEFAULT_PARTY = '100x100';
   const GEO = { type: 'FeatureCollection', features: [] };
+  const BARRIADAS = { type: 'FeatureCollection', features: [] };
+  let ALL_PARTIES = [];
+  let selectedFeatureKey = null;
 
   const fmt = new Intl.NumberFormat('es-ES');
   const fmtPct = (x) => (x == null || isNaN(x)) ? '—' : (Number(x).toFixed(2) + '%');
@@ -140,6 +187,16 @@
     return `hsl(${hashParty(name) % 360} 72% 52%)`;
   }
 
+  function featureKey(feature){
+    return getGeoMode() === 'barriada'
+      ? `barriada:${feature.properties.barriada || ''}`
+      : `section:${feature.properties.CUSEC || ''}`;
+  }
+
+  function isSelected(feature){
+    return selectedFeatureKey && selectedFeatureKey === featureKey(feature);
+  }
+
   function hexToRgb(hex){
     const clean = hex.replace('#', '');
     const norm = clean.length === 3 ? clean.split('').map(x => x + x).join('') : clean;
@@ -151,14 +208,15 @@
     const [r, g, b] = hexToRgb(hex);
     const m = Math.max(0, Math.min(1, t));
     const out = [
-      Math.round(16 + (r - 16) * m),
-      Math.round(23 + (g - 23) * m),
-      Math.round(42 + (b - 42) * m)
+      Math.round(244 + (r - 244) * m),
+      Math.round(247 + (g - 247) * m),
+      Math.round(252 + (b - 252) * m)
     ];
     return `rgb(${out[0]},${out[1]},${out[2]})`;
   }
 
   function getMode(){ return document.querySelector('input[name="mode"]:checked')?.value || 'pct'; }
+  function getGeoMode(){ return document.querySelector('input[name="geoMode"]:checked')?.value || 'section'; }
   function getParty(){ return partySel.value || DEFAULT_PARTY; }
   function getMinVotes(){ return Number(minVotesEl.value || 0); }
 
@@ -179,6 +237,11 @@
   }
 
   function featureValue(feature){
+    if (getGeoMode() === 'barriada'){
+      return getMode() === 'votes'
+        ? Number(feature.properties.party_votes || 0)
+        : Number(feature.properties.party_pct || 0);
+    }
     return getMode() === 'votes' ? getPartyVotes(feature) : getPartyPct(feature);
   }
 
@@ -191,6 +254,79 @@
 
   function filteredFeatures(){
     return GEO.features.filter(inFilter);
+  }
+
+  function buildBarriadaFeatures(){
+    const grouped = new Map();
+    for (const feature of filteredFeatures()){
+      const name = String(feature.properties.barriada || 'Sin barriada');
+      if (!grouped.has(name)){
+        grouped.set(name, {
+          barriada: name,
+          sectionCount: 0,
+          partyVotes: 0,
+          escrutinioVotes: 0,
+          participationSum: 0,
+          geometry: feature.properties.barriada_geometry || null,
+          winnerCounts: new Map()
+        });
+      }
+      const bucket = grouped.get(name);
+      bucket.sectionCount += 1;
+      bucket.partyVotes += getPartyVotes(feature);
+      bucket.escrutinioVotes += Number(feature.properties.escrutinio_votes || 0);
+      bucket.participationSum += Number(feature.properties.participation_pct || 0);
+      if (!bucket.geometry && feature.properties.barriada_geometry) bucket.geometry = feature.properties.barriada_geometry;
+      const winner = String(feature.properties.w || '—');
+      bucket.winnerCounts.set(winner, (bucket.winnerCounts.get(winner) || 0) + 1);
+    }
+
+    return [...grouped.values()].map(bucket => {
+      const winner = [...bucket.winnerCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '—';
+      return {
+        type: 'Feature',
+        geometry: bucket.geometry,
+        properties: {
+          barriada: bucket.barriada,
+          section_count: bucket.sectionCount,
+          party_votes: bucket.partyVotes,
+          escrutinio_votes: bucket.escrutinioVotes,
+          party_pct: bucket.escrutinioVotes ? (bucket.partyVotes / bucket.escrutinioVotes) * 100 : 0,
+          avg_participation: bucket.sectionCount ? (bucket.participationSum / bucket.sectionCount) : 0,
+          winner
+        }
+      };
+    }).filter(feature => feature.geometry);
+  }
+
+  function activeFeatures(){
+    return getGeoMode() === 'barriada' ? buildBarriadaFeatures() : filteredFeatures();
+  }
+
+  function assignBarriada(feature){
+    const point = turf.pointOnFeature(feature);
+    const direct = BARRIADAS.features.find(b => turf.booleanPointInPolygon(point, b));
+    if (direct) return direct;
+
+    let best = null;
+    let bestArea = 0;
+    for (const barriada of BARRIADAS.features){
+      try {
+        const bboxA = turf.bbox(feature);
+        const bboxB = turf.bbox(barriada);
+        const overlaps = !(bboxA[2] < bboxB[0] || bboxA[0] > bboxB[2] || bboxA[3] < bboxB[1] || bboxA[1] > bboxB[3]);
+        if (!overlaps) continue;
+        const clipped = turf.intersect(turf.featureCollection([feature, barriada]));
+        if (!clipped) continue;
+        const area = turf.area(clipped);
+        if (area > bestArea){
+          bestArea = area;
+          best = barriada;
+        }
+      } catch (err) {
+      }
+    }
+    return best;
   }
 
   function updateSelectors(){
@@ -215,9 +351,13 @@
   }
 
   function updateKpis(features){
-    const votes = features.map(getPartyVotes);
+    const votes = getGeoMode() === 'barriada'
+      ? features.map(f => Number(f.properties.party_votes || 0))
+      : features.map(getPartyVotes);
     const sumVotes = votes.reduce((a, b) => a + b, 0);
-    const sumEscr = features.reduce((a, f) => a + Number(f.properties.escrutinio_votes || 0), 0);
+    const sumEscr = getGeoMode() === 'barriada'
+      ? features.reduce((a, f) => a + (Number(f.properties.party_votes || 0) / Math.max(Number(f.properties.party_pct || 0), 0.000001)) * 100, 0)
+      : features.reduce((a, f) => a + Number(f.properties.escrutinio_votes || 0), 0);
     const weightedPct = sumEscr ? (sumVotes / sumEscr) * 100 : 0;
     const maxVotes = votes.length ? Math.max(...votes) : 0;
     document.getElementById('kSections').textContent = fmt.format(features.length);
@@ -227,17 +367,35 @@
   }
 
   function styleFeature(feature){
-    if (!inFilter(feature)) {
+    if (getGeoMode() === 'section' && !inFilter(feature)) {
       return { color: 'rgba(255,255,255,0.06)', weight: 0.4, fillOpacity: 0.05, fillColor: 'rgba(255,255,255,0.03)' };
     }
-    const values = filteredFeatures().map(featureValue);
+    const values = activeFeatures().map(featureValue);
     const max = Math.max(...values, 0.000001);
-    const t = Math.pow(featureValue(feature) / max, 0.78);
+    const t = Math.pow(featureValue(feature) / max, 1.1);
     const base = partyBaseColor(getParty());
-    return { color: base, weight: 0.95, fillOpacity: 0.72, fillColor: mixColor(base, t) };
+    const selected = isSelected(feature);
+    return {
+      color: selected ? '#111827' : base,
+      weight: selected ? 2.8 : 0.95,
+      fillOpacity: selected ? 0.92 : 0.82,
+      fillColor: mixColor(base, t)
+    };
   }
 
   function popupHtml(feature){
+    if (getGeoMode() === 'barriada'){
+      const p = feature.properties;
+      return `
+      <div style="font-family:system-ui;min-width:260px">
+        <div style="font-weight:800;margin-bottom:4px">${p.barriada}</div>
+        <div><b>Secciones</b>: ${fmt.format(Number(p.section_count || 0))}</div>
+        <div><b>${getParty()}</b>: ${fmt.format(Number(p.party_votes || 0))} votos</div>
+        <div><b>% ${getParty()}</b>: ${fmtPct(Number(p.party_pct || 0))}</div>
+        <div><b>Participación media</b>: ${fmtPct(Number(p.avg_participation || 0))}</div>
+        <div><b>Ganador predominante</b>: ${p.winner || '—'}</div>
+      </div>`;
+    }
     const p = feature.properties;
     const votes = getPartyVotes(feature);
     const pct = getPartyPct(feature);
@@ -253,6 +411,7 @@
         <div><b>Escrutinio</b>: ${fmt.format(Number(p.escrutinio_votes || 0))} votos</div>
         <div><b>Participación</b>: ${fmtPct(participation)}</div>
         <div><b>Ganador</b>: ${p.w || '—'} (${fmtPct(winnerPct)})</div>
+        <div><b>Barriada</b>: ${p.barriada || 'Sin asignar'}</div>
         ${extra100}
       </div>`;
   }
@@ -260,13 +419,22 @@
   let layer = null;
   function renderLayer(){
     if (layer) layer.remove();
-    layer = L.geoJSON(GEO, {
+    layer = L.geoJSON({ type: 'FeatureCollection', features: activeFeatures() }, {
       style: styleFeature,
       onEachFeature: (feature, leafletLayer) => {
         leafletLayer.bindTooltip(popupHtml(feature), { sticky: true, direction: 'auto' });
-        leafletLayer.on('click', () => leafletLayer.openTooltip());
+        leafletLayer.on('click', () => {
+          selectedFeatureKey = featureKey(feature);
+          renderLayer();
+        });
       }
     }).addTo(map);
+    layer.eachLayer(l => {
+      if (isSelected(l.feature)) {
+        l.bringToFront();
+        l.openTooltip();
+      }
+    });
   }
 
   const legend = L.control({ position: 'bottomright' });
@@ -294,8 +462,9 @@
     const title = document.getElementById('legTitle');
     const mode = getMode();
     const party = getParty();
-    title.textContent = mode === 'votes' ? `${party} · votos por sección` : `${party} · % sobre escrutinio`;
-    const values = filteredFeatures().map(featureValue);
+    const geoLabel = getGeoMode() === 'barriada' ? 'barriada' : 'sección';
+    title.textContent = mode === 'votes' ? `${party} · votos por ${geoLabel}` : `${party} · % sobre escrutinio (${geoLabel})`;
+    const values = activeFeatures().map(featureValue);
     items.innerHTML = '';
     if (!values.length){
       items.innerHTML = '<div class="item">(sin datos tras filtros)</div>';
@@ -344,11 +513,22 @@
     }).join('') || '<tr><td colspan="5">(sin datos)</td></tr>';
   }
 
+  function renderBarriadaTable(){
+    const tbody = document.querySelector('#barriadaTable tbody');
+    const rows = buildBarriadaFeatures()
+      .sort((a, b) => Number(b.properties.party_votes || 0) - Number(a.properties.party_votes || 0));
+    tbody.innerHTML = rows.map(feature => {
+      const p = feature.properties;
+      return `<tr><td>${p.barriada}</td><td>${fmt.format(Number(p.section_count || 0))}</td><td>${fmt.format(Math.round(Number(p.party_votes || 0)))}</td><td>${fmtPct(Number(p.party_pct || 0))}</td><td>${p.winner || '—'}</td></tr>`;
+    }).join('') || '<tr><td colspan="5">(sin datos)</td></tr>';
+  }
+
   function renderTopTables(){
     const rows = filteredFeatures().map(feature => ({
       CDIS: String(feature.properties.CDIS || ''),
       CSEC: String(feature.properties.CSEC || ''),
       CUSEC: String(feature.properties.CUSEC || ''),
+      barriada: String(feature.properties.barriada || 'Sin barriada'),
       votes: getPartyVotes(feature),
       pct: getPartyPct(feature)
     }));
@@ -357,12 +537,52 @@
     const topPct = [...rows].sort((a, b) => b.pct - a.pct).slice(0, 15);
 
     document.querySelector('#topVotes tbody').innerHTML = topVotes.map((row, i) =>
-      `<tr title="CUSEC ${row.CUSEC}"><td>${i + 1}</td><td>${row.CDIS}</td><td>${row.CSEC}</td><td>${fmt.format(row.votes)}</td><td>${row.pct.toFixed(2)}%</td></tr>`
+      `<tr title="CUSEC ${row.CUSEC} · ${row.barriada}"><td>${i + 1}</td><td>${row.CDIS}</td><td>${row.CSEC}</td><td>${fmt.format(row.votes)}</td><td>${row.pct.toFixed(2)}%</td></tr>`
     ).join('') || '<tr><td colspan="5">(sin datos)</td></tr>';
 
     document.querySelector('#topPct tbody').innerHTML = topPct.map((row, i) =>
-      `<tr title="CUSEC ${row.CUSEC}"><td>${i + 1}</td><td>${row.CDIS}</td><td>${row.CSEC}</td><td>${row.pct.toFixed(2)}%</td><td>${fmt.format(row.votes)}</td></tr>`
+      `<tr title="CUSEC ${row.CUSEC} · ${row.barriada}"><td>${i + 1}</td><td>${row.CDIS}</td><td>${row.CSEC}</td><td>${row.pct.toFixed(2)}%</td><td>${fmt.format(row.votes)}</td></tr>`
     ).join('') || '<tr><td colspan="5">(sin datos)</td></tr>';
+  }
+
+  function renderTotalsTables(){
+    const sectionHead = document.querySelector('#totalsSectionTable thead');
+    const sectionBody = document.querySelector('#totalsSectionTable tbody');
+    const barriadaHead = document.querySelector('#totalsBarriadaTable thead');
+    const barriadaBody = document.querySelector('#totalsBarriadaTable tbody');
+
+    const partyHeaders = ALL_PARTIES.map(p => `<th>${p}</th>`).join('');
+    sectionHead.innerHTML = `<tr><th>Distrito</th><th>Sección</th><th>CUSEC</th><th>Barriada</th><th>Escrutinio</th>${partyHeaders}</tr>`;
+    barriadaHead.innerHTML = `<tr><th>Barriada</th><th>Secciones</th><th>Escrutinio</th>${partyHeaders}</tr>`;
+
+    const sectionRows = [...GEO.features]
+      .sort((a, b) => String(a.properties.CDIS || '').localeCompare(String(b.properties.CDIS || '')) || String(a.properties.CSEC || '').localeCompare(String(b.properties.CSEC || '')))
+      .map(feature => {
+        const p = feature.properties;
+        const cols = ALL_PARTIES.map(name => fmt.format(Number(feature.properties.party_votes_map?.[name] || 0))).join('</td><td>');
+        return `<tr><td>${p.CDIS || ''}</td><td>${p.CSEC || ''}</td><td>${p.CUSEC || ''}</td><td>${p.barriada || 'Sin barriada'}</td><td>${fmt.format(Number(p.escrutinio_votes || 0))}</td><td>${cols}</td></tr>`;
+      }).join('');
+    sectionBody.innerHTML = sectionRows || '<tr><td colspan="99">(sin datos)</td></tr>';
+
+    const agg = new Map();
+    for (const feature of GEO.features){
+      const name = String(feature.properties.barriada || 'Sin barriada');
+      if (!agg.has(name)){
+        agg.set(name, { sections: 0, escrutinio: 0, parties: Object.fromEntries(ALL_PARTIES.map(p => [p, 0])) });
+      }
+      const row = agg.get(name);
+      row.sections += 1;
+      row.escrutinio += Number(feature.properties.escrutinio_votes || 0);
+      for (const party of ALL_PARTIES){
+        row.parties[party] += Number(feature.properties.party_votes_map?.[party] || 0);
+      }
+    }
+    barriadaBody.innerHTML = [...agg.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, row]) => {
+        const cols = ALL_PARTIES.map(p => fmt.format(Number(row.parties[p] || 0))).join('</td><td>');
+        return `<tr><td>${name}</td><td>${fmt.format(row.sections)}</td><td>${fmt.format(row.escrutinio)}</td><td>${cols}</td></tr>`;
+      }).join('') || '<tr><td colspan="99">(sin datos)</td></tr>';
   }
 
   function fit(){
@@ -382,14 +602,16 @@
   function refresh(){
     minVEl.textContent = String(getMinVotes());
     selInfo.textContent = districtSel.value === 'ALL' ? 'Distrito: Todos' : `Distrito: ${districtSel.value}`;
-    partyInfo.textContent = `Partido: ${getParty()}`;
+    partyInfo.textContent = `Partido: ${getParty()} · ${getGeoMode() === 'barriada' ? 'Barriada' : 'Sección'}`;
     updateSlider();
-    const feats = filteredFeatures();
+    const feats = activeFeatures();
     updateKpis(feats);
     renderLayer();
     updateLegend();
     renderDistrictTable();
+    renderBarriadaTable();
     renderTopTables();
+    renderTotalsTables();
   }
 
   document.getElementById('fit').addEventListener('click', fit);
@@ -397,10 +619,17 @@
   partySel.addEventListener('change', refresh);
   minVotesEl.addEventListener('input', refresh);
   document.querySelectorAll('input[name="mode"]').forEach(r => r.addEventListener('change', refresh));
+  document.querySelectorAll('input[name="geoMode"]').forEach(r => r.addEventListener('change', refresh));
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach(node => node.classList.toggle('active', node === btn));
+      document.querySelectorAll('.tab-pane').forEach(node => node.classList.toggle('active', node.id === btn.dataset.tab));
+    });
+  });
 
   document.getElementById('download').addEventListener('click', () => {
     const feats = filteredFeatures();
-    const header = ['CDIS', 'CSEC', 'CUSEC', 'party', 'votes_party', 'pct_party', 'escrutinio_votes', 'participation_pct', 'winner', 'winner_pct'];
+    const header = ['CDIS', 'CSEC', 'CUSEC', 'barriada', 'party', 'votes_party', 'pct_party', 'escrutinio_votes', 'participation_pct', 'winner', 'winner_pct'];
     const lines = [header.join(',')];
     for (const feature of feats){
       const p = feature.properties;
@@ -408,6 +637,7 @@
         p.CDIS,
         p.CSEC,
         p.CUSEC,
+        p.barriada || '',
         getParty(),
         getPartyVotes(feature),
         getPartyPct(feature).toFixed(6),
@@ -434,20 +664,35 @@
   });
 
   async function loadData(){
-    const res = await fetch(DATA_URL, { cache: 'no-store' });
+    const [res, barriadasRes] = await Promise.all([
+      fetch(DATA_URL, { cache: 'no-store' }),
+      fetch(BARRIADAS_URL, { cache: 'no-store' })
+    ]);
     if (!res.ok) throw new Error(`No se pudo cargar ${DATA_URL}: ${res.status}`);
-    const json = await res.json();
+    if (!barriadasRes.ok) throw new Error(`No se pudo cargar ${BARRIADAS_URL}: ${barriadasRes.status}`);
+    const [json, barriadasJson] = await Promise.all([res.json(), barriadasRes.json()]);
+    BARRIADAS.features = Array.isArray(barriadasJson.features) ? barriadasJson.features : [];
     const all = Array.isArray(json.features) ? json.features : [];
+    ALL_PARTIES = [...new Set(all
+      .filter(f => String(f.properties?.NMUN || '') === 'Algeciras')
+      .flatMap(f => (Array.isArray(f.properties?.parties) ? f.properties.parties.map(p => String(p.c || '')) : []))
+    )].filter(Boolean).sort();
     GEO.features = all
       .filter(f => String(f.properties?.NMUN || '') === 'Algeciras')
       .map(f => {
         const parties = Array.isArray(f.properties?.parties) ? f.properties.parties : [];
         const totalVotes = parties.reduce((sum, p) => sum + Number(p.v || 0), 0);
         const hundred = parties.find(p => String(p.c || '') === '100x100');
+        const partyVotesMap = Object.fromEntries(parties.map(p => [String(p.c || ''), Number(p.v || 0)]));
+        const barriadaFeature = assignBarriada(f);
         return {
           ...f,
           properties: {
             ...f.properties,
+            party_votes_map: partyVotesMap,
+            barriada: barriadaFeature?.properties?.nombre || 'Sin barriada',
+            barriada_tipo: barriadaFeature?.properties?.tipo || '',
+            barriada_geometry: barriadaFeature?.geometry || null,
             escrutinio_votes: totalVotes,
             participation_pct: f.properties?.pa != null ? Number(f.properties.pa) * 100 : null,
             winner_pct: f.properties?.wp != null ? Number(f.properties.wp) * 100 : null,
